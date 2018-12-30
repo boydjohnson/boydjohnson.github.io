@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How to view git commits across branches</title>
+
+  <!--[if lte IE 8]>
+      <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;base-min.css>
+      <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-min.css>
+      <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-responsive-old-ie-min.css>
+  <![endif]-->
+  <!--[if gt IE 8]><!-->
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;base-min.css>
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-min.css>
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-responsive-min.css>
+  <!--<![endif]-->
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;main.css>
+</head>
+
+<body>
+  <div class="pure-g">
+
+    <div class="pure-u-1-2">
+      <h1 class="headline-page">How to view git commits across branches</h1>
+      <div class="by-line">- Boyd Johnson 2017-10-28</div>
+    </div>
+    <div class="pure-u-1-2">
+      <div class="orientation headerbox">
+        <a href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;index.html>
+          <h3>Oldfangled Software</h3>
+        </a>
+         
+      </div>
+    </div>
+
+
+  </div>
+  <div class="pure-g">
+    <div class="pure-u-1 blog-box blog-content">
+      <p>When I was starting out with git, I would wonder where is Feature Branch A in relation to master or where is Feature Branch B in relation to Feature Branch A. I came across this useful command, and have given it an alias in my .bashrc because I use it so much.</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#bf616a;">git</span><span style="color:#c0c5ce;"> log</span><span style="color:#bf616a;"> --graph --all --decorate</span><span style="color:#c0c5ce;">=full</span><span style="color:#bf616a;"> --oneline
+</span><span style="color:#c0c5ce;">
+</span></pre><h3 id="example-output">Example output</h3>
+<p><img src="https://boydjohnson.github.io/2017-10-28-view-all-git-commits/2017-10-28-view-all-git-commits.png" alt="Example output" /></p>
+
+    </div>
+  </div>
+</body>
+
+</html>

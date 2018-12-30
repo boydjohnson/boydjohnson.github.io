@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>An invitation to slow down and enjoy the trees</title>
+
+  <!--[if lte IE 8]>
+      <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;base-min.css>
+      <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-min.css>
+      <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-responsive-old-ie-min.css>
+  <![endif]-->
+  <!--[if gt IE 8]><!-->
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;base-min.css>
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-min.css>
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;grids-responsive-min.css>
+  <!--<![endif]-->
+  <link rel="stylesheet" href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;main.css>
+</head>
+
+<body>
+  <div class="pure-g">
+
+    <div class="pure-u-1-2">
+      <h1 class="headline-page">An invitation to slow down and enjoy the trees</h1>
+      <div class="by-line">- Boyd Johnson 2018-12-29</div>
+    </div>
+    <div class="pure-u-1-2">
+      <div class="orientation headerbox">
+        <a href=https:&#x2F;&#x2F;boydjohnson.github.io&#x2F;index.html>
+          <h3>Oldfangled Software</h3>
+        </a>
+         
+      </div>
+    </div>
+
+
+  </div>
+  <div class="pure-g">
+    <div class="pure-u-1 blog-box blog-content">
+      <h3 id="what-are-we-doing-and-why-are-we-doing-it">What are we doing and why are we doing it?</h3>
+<p>We are going to go over the implementation of a prefix tree in Rust step by step. I have seen prefix trees as part of the data structure called a <a href="https://github.com/ethereum/wiki/wiki/Patricia-Tree">Patricia tree</a>, or a <a href="https://sawtooth.hyperledger.org/docs/core/releases/latest/architecture/global_state.html">Merkle-Radix tree</a>, or sometimes a <a href="https://www.deadalnix.me/2016/11/06/using-merklix-tree-to-shard-block-validation/">Merklix tree</a>. What is important from the prefix portion of the tree is that you can find all of the full addresses in the tree that are under a given namespace. The Merkle functionality is more powerful:
+given a set of insertions and deletions in the tree and a starting hash or id of the root node (merkle hash) the ending merkle hash is cryptographically guaranteed to only have been created by the same insertions and deletions.</p>
+<p>Our first decision is about how to store the Tree: will it be backed by some sort of storage system, or will it be completely in memory? Let's go with in-memory.</p>
+<p>Then our child nodes will be stored in each node, itself and our node should look like:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">struct </span><span style="color:#c0c5ce;">Node&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">data</span><span style="color:#c0c5ce;">: Option&lt;T&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">children</span><span style="color:#c0c5ce;">: Vec&lt;Node&lt;T&gt;&gt;,
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>The interesting things about this Node is that the <code>data</code> is optional and the <code>children</code> are stored in a <code>Vec</code>. As I started on this I was leaning towards <code>Rc</code> or <code>Arc</code>, but I think the <code>Vec</code> will give us all of the functionality we need. That the data is optional means that we will have nodes that are not directly inserted with data, but made as part of the insertion process.</p>
+<p>What does that look like? Say you have inserted <code>mendacity</code> and then you insert <code>meticulous</code>, you should have nodes at <code>me</code>, <code>mendacity</code>, and <code>meticulous</code>:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">m                                     m
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">e                                     e
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">n                                   n   t
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">d                                   d   i
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">a  -----insert(&quot;meticulous&quot;)--&gt;     a   c
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">c                                   c   i
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">i                                   i   l
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">t                                   t   o
+</span><span style="color:#c0c5ce;">              </span><span style="color:#c0c5ce;">y                                   y   u
+</span><span style="color:#c0c5ce;">                                                      </span><span style="color:#c0c5ce;">s
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>The node at <code>me</code> would contain no data, but would have two children.</p>
+<p>Ok, now to the PrefixTree definition.</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">PrefixTree&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">root</span><span style="color:#c0c5ce;">: Node&lt;T&gt;,
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>And a start on the <code>impl</code>:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">impl</span><span style="color:#c0c5ce;">&lt;T&gt; PrefixTree&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">new</span><span style="color:#c0c5ce;">() -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">PrefixTree {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">root: Node {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">data: None,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">prefix: &quot;&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">children: vec![],
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">insert</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String, </span><span style="color:#bf616a;">data</span><span style="color:#c0c5ce;">: T){
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">unimplemented!();
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">get_mut_child</span><span style="color:#c0c5ce;">&lt;</span><span style="color:#b48ead;">&#39;a</span><span style="color:#c0c5ce;">&gt;(</span><span style="color:#bf616a;">node</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">&#39;a mut </span><span style="color:#c0c5ce;">Node&lt;T&gt;, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; Option&lt;&amp;</span><span style="color:#b48ead;">&#39;a mut </span><span style="color:#c0c5ce;">Node&lt;T&gt;&gt; {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">for</span><span style="color:#c0c5ce;"> child in &amp;</span><span style="color:#b48ead;">mut</span><span style="color:#c0c5ce;"> node.children {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> prefix.</span><span style="color:#96b5b4;">starts_with</span><span style="color:#c0c5ce;">(&amp;child.prefix) {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Some(child_node);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">None
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">walk_mut</span><span style="color:#c0c5ce;">&lt;</span><span style="color:#b48ead;">&#39;a</span><span style="color:#c0c5ce;">&gt;(&amp;</span><span style="color:#b48ead;">&#39;a mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; WalkResult&lt;</span><span style="color:#b48ead;">&#39;a</span><span style="color:#c0c5ce;">, T&gt; {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">unimplemented!();
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>What I think is a little unclear is what the different cases are and how we represent
+them in the <code>WalkResult</code> enum.</p>
+<h4 id="cases">Cases</h4>
+<ul>
+<li>Found the exact string</li>
+<li>Found the parent of the string being inserted
+<ul>
+<li>A child of the parent has a prefix that matches part of the new string.</li>
+<li>A child of the parent has a prefix that starts with the new string.</li>
+<li>No child of the parent has a prefix that starts with the new string past the parent's prefix.</li>
+</ul>
+</li>
+</ul>
+<p>So the <code>WalkResult</code> will look like:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">WalkResult&lt;&#39;a, T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">Found(&amp;</span><span style="color:#b48ead;">&#39;a mut </span><span style="color:#c0c5ce;">Node&lt;T&gt;),
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">FoundParent(&amp;</span><span style="color:#b48ead;">&#39;a mut </span><span style="color:#c0c5ce;">Node&lt;T&gt;),
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>I start implementing the <code>walk_mut</code> function and let's talk it through: In general, we
+would keep on calling <code>get_mut_child</code> until either the <code>prefix</code> of a child exactly matches
+the <code>prefix</code> we are looking for, or the next child is None.</p>
+<h3 id="i-think-there-is-a-snag">I think there is a snag!</h3>
+<p>We need to hold onto the parent node when we are inspecting the next child, and to create
+the next child we need to use the parent. Since these are <code>&amp;mut</code> references, we would have 2 mutable
+references, which would violate the ownership and borrowing rules of Rust. Let's use an <code>Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;</code>.</p>
+<p>Ok, lets implement the <code>walk_mut</code> function.</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">walk_mut</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; WalkResult&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> node = Rc::clone(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.root);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> new_node = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_mut_child(Rc::clone(&amp;node), prefix);
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> parent_node = node;
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">while let </span><span style="color:#c0c5ce;">Some(child) = new_node {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> child.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix == prefix {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">WalkResult::Found(child);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node = Rc::clone(&amp;child);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_mut_child(child, prefix);
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">WalkResult::FoundParent(parent_node)
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>Looking back at the cases, there are three cases for the WalkResult::FoundParent variant, and
+so we make an enum to capture these different cases:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">ParentChildPattern&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">ParentOfOtherChild {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">other_childs_prefix: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">SplitNodeIsParentOfBoth {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">split_nodes_prefix: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">other_nodes_prefix: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">NewNodeIsChild {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>And our insert function will start with:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">insert</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String, </span><span style="color:#bf616a;">data</span><span style="color:#c0c5ce;">: T) {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">match </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">walk_mut</span><span style="color:#c0c5ce;">(&amp;prefix) {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">WalkResult::Found(node) =&gt; {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">node.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">().data = Some(data);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">WalkResult::FoundParent(node) =&gt; {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_node = Rc::new(RefCell::new(Node {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">prefix: prefix,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">data: Some(data),
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">children: vec![],
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}));
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> prefix = { new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">() };
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> result = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_relationships(node, prefix, new_node);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> result {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">ParentChildPattern::NewNodeIsChild { parent_node, new_node } {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">parent_node.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">().children.</span><span style="color:#96b5b4;">push</span><span style="color:#c0c5ce;">(new_node);
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">ParentChildPattern::ParentOfOtherChild { parent_node, other_childs_prefix, new_node} =&gt; {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> index = parent_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre><h3 id="we-ve-hit-a-snag-again">We've hit a snag, again.</h3>
+<p>In order to find the index of the &quot;other child&quot; to remove it from the parent and add it to the new node's children,
+we need to use the <code>Vec</code> method <code>binary_search_by_key</code>, which will require us to sort the children. It seems
+more efficient if we use something like HashMap where we can have O(1) lookups. Let's change to use a <code>HashMap</code>.</p>
+<p>After that change our insert looks like:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">insert</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#b48ead;">mut </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String, </span><span style="color:#bf616a;">data</span><span style="color:#c0c5ce;">: T) {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">match </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">walk_mut</span><span style="color:#c0c5ce;">(&amp;prefix) {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">WalkResult::Found(node) =&gt; { }
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">WalkResult::FoundParent(node) =&gt; {
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> result {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">ParentChildPattern::NewNodeIsChild {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">} =&gt; { }
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">ParentChildPattern::ParentOfOtherChild {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">other_childs_prefix,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">} =&gt; { }
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">ParentChildPattern::SplitNodeIsParentOfBoth {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">split_nodes_prefix,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">other_nodes_prefix,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">} =&gt; { }
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre><pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">WalkResult::Found(node) =&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">node.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">().data = Some(data);
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre><pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">WalkResult::FoundParent(node) =&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_node = Rc::new(RefCell::new(Node {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">prefix: prefix,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">data: Some(data),
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">children: HashMap::new(),
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}));
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> result = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_relationships(node, prefix, new_node);
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> result {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">ParentChildPattern::NewNodeIsChild {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">} =&gt; {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_nodes_prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(new_nodes_prefix, new_node);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">ParentChildPattern::ParentOfOtherChild {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">other_childs_prefix,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">} =&gt; {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> other_child = parent_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">remove</span><span style="color:#c0c5ce;">(&amp;other_childs_prefix)
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">expect</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">The other child must be in the parent&#39;s children</span><span style="color:#c0c5ce;">&quot;);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> other_childs_prefix = other_child.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">new_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(other_childs_prefix, other_child);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_nodes_prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(new_nodes_prefix, new_node);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">ParentChildPattern::SplitNodeIsParentOfBoth {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">split_nodes_prefix,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">other_nodes_prefix,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">} =&gt; {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> other_node = parent_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">remove</span><span style="color:#c0c5ce;">(&amp;other_nodes_prefix)
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">expect</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">The other child must be in the parent&#39;s children</span><span style="color:#c0c5ce;">&quot;);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> split_node = Rc::new(RefCell::new(Node {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">prefix: split_nodes_prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">data: None,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">children: HashMap::new(),
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}));
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">split_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(other_nodes_prefix, other_node);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_nodes_prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">split_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(new_nodes_prefix, new_node);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(split_nodes_prefix, split_node);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>Let's make a <code>get</code> method and call it a day.</p>
+<p>Here is the <code>get</code> method:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">get</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; Option&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">match </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">walk_mut</span><span style="color:#c0c5ce;">(prefix) {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">WalkResult::Found(node) =&gt; node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().data.</span><span style="color:#96b5b4;">as_ref</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">cloned</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">_ =&gt; None,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre>
+<p>Then a small number of tests to make sure I didn't totally screw up:</p>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">cfg</span><span style="color:#c0c5ce;">(test)]
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">mod </span><span style="color:#c0c5ce;">tests {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">use super</span><span style="color:#c0c5ce;">::*;
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">test</span><span style="color:#c0c5ce;">]
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">test_insert_and_get</span><span style="color:#c0c5ce;">() {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> tree = PrefixTree::new();
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">mettle</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">meddle</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">med</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">medial</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">10</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">middle</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">12</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">mettle</span><span style="color:#c0c5ce;">&quot;), Some(</span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">));
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">med</span><span style="color:#c0c5ce;">&quot;), Some(</span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">));
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">meddle</span><span style="color:#c0c5ce;">&quot;), Some(</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">));
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">mech</span><span style="color:#c0c5ce;">&quot;), None);
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span></pre><h2 id="high-level-things-to-keep-in-mind">High level things to keep in mind</h2>
+<ul>
+<li>Think through the cases and have an enum variant that corresponds for each case</li>
+<li>The Rust borrow checker is exacting and there is no shame in having to work with an <code>Rc</code> or <code>Arc</code>.</li>
+</ul>
+<h3 id="all-the-code-together">All the code together</h3>
+<pre style="background-color:#2b303b;">
+<span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">std::cell::RefCell;
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">std::collections::HashMap;
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">use </span><span style="color:#c0c5ce;">std::rc::Rc;
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">struct </span><span style="color:#c0c5ce;">Node&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">data</span><span style="color:#c0c5ce;">: Option&lt;T&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">children</span><span style="color:#c0c5ce;">: HashMap&lt;String, Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">pub struct </span><span style="color:#c0c5ce;">PrefixTree&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#bf616a;">root</span><span style="color:#c0c5ce;">: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">impl</span><span style="color:#c0c5ce;">&lt;T: Clone&gt; PrefixTree&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">new</span><span style="color:#c0c5ce;">() -&gt; </span><span style="color:#b48ead;">Self </span><span style="color:#c0c5ce;">{
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">PrefixTree {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">root: Rc::new(RefCell::new(Node {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">data: None,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">prefix: &quot;&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">children: HashMap::new(),
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">})),
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">get</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; Option&lt;T&gt; {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">match </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">walk_mut</span><span style="color:#c0c5ce;">(prefix) {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">WalkResult::Found(node) =&gt; node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().data.</span><span style="color:#96b5b4;">as_ref</span><span style="color:#c0c5ce;">().</span><span style="color:#96b5b4;">cloned</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">_ =&gt; None,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">insert</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String, </span><span style="color:#bf616a;">data</span><span style="color:#c0c5ce;">: T) {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">match </span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">walk_mut</span><span style="color:#c0c5ce;">(&amp;prefix) {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">WalkResult::Found(node) =&gt; {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">node.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">().data = Some(data);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">WalkResult::FoundParent(node) =&gt; {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">eprintln!(
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">Found Parent: parent {}, child {}</span><span style="color:#c0c5ce;">&quot;,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">&amp;node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">&amp;prefix
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_node = Rc::new(RefCell::new(Node {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">prefix: prefix,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">data: Some(data),
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">children: HashMap::new(),
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">}));
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> result = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_relationships(node, prefix, new_node);
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">match</span><span style="color:#c0c5ce;"> result {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">ParentChildPattern::NewNodeIsChild {
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">} =&gt; {
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">eprintln!(
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">new node is child: parent {}, child {}</span><span style="color:#c0c5ce;">&quot;,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;parent_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_nodes_prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">parent_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(new_nodes_prefix, new_node);
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">ParentChildPattern::ParentOfOtherChild {
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">other_childs_prefix,
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">} =&gt; {
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">eprintln!(
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">Parent of other child: parent {}, other node {}, child {}</span><span style="color:#c0c5ce;">&quot;,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;parent_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;other_childs_prefix,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> other_child = parent_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">remove</span><span style="color:#c0c5ce;">(&amp;other_childs_prefix)
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">expect</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">The other child must be in the parent&#39;s children</span><span style="color:#c0c5ce;">&quot;);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> other_childs_prefix = other_child.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">new_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(other_childs_prefix, other_child);
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_nodes_prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">parent_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(new_nodes_prefix, new_node);
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">ParentChildPattern::SplitNodeIsParentOfBoth {
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">parent_node,
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">split_nodes_prefix,
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">other_nodes_prefix,
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">new_node,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">} =&gt; {
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">eprintln!(
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&quot;</span><span style="color:#a3be8c;">split node is parent of both: parent {}, split {}, other {}, child {}</span><span style="color:#c0c5ce;">&quot;,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;parent_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;split_nodes_prefix,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;other_nodes_prefix,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">&amp;new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> other_node = parent_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">remove</span><span style="color:#c0c5ce;">(&amp;other_nodes_prefix)
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">expect</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">The other child must be in the parent&#39;s children</span><span style="color:#c0c5ce;">&quot;);
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> split_node = Rc::new(RefCell::new(Node {
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">prefix: split_nodes_prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">data: None,
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">children: HashMap::new(),
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">}));
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">split_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(other_nodes_prefix, other_node);
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> new_nodes_prefix = new_node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">split_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(new_nodes_prefix, new_node);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                            </span><span style="color:#c0c5ce;">parent_node
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">borrow_mut</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.children
+</span><span style="color:#c0c5ce;">                                </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(split_nodes_prefix, split_node);
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">get_relationships</span><span style="color:#c0c5ce;">(
+</span><span style="color:#c0c5ce;">            </span><span style="color:#bf616a;">node</span><span style="color:#c0c5ce;">: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#bf616a;">new_node</span><span style="color:#c0c5ce;">: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">) -&gt; ParentChildPattern&lt;T&gt; {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> prefix_len = node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(childs_prefix, child) in &amp;node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().children {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> childs_prefix.</span><span style="color:#96b5b4;">starts_with</span><span style="color:#c0c5ce;">(&amp;prefix) {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">ParentChildPattern::ParentOfOtherChild {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">parent_node: Rc::clone(&amp;node),
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">other_childs_prefix: childs_prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">new_node: new_node,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">};
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> common_substring: String = childs_prefix
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">chars</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">zip</span><span style="color:#c0c5ce;">(prefix.</span><span style="color:#96b5b4;">chars</span><span style="color:#c0c5ce;">())
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">take_while</span><span style="color:#c0c5ce;">(|(</span><span style="color:#bf616a;">left</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">right</span><span style="color:#c0c5ce;">)| left == right)
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">map</span><span style="color:#c0c5ce;">(|(</span><span style="color:#bf616a;">character</span><span style="color:#c0c5ce;">, _)| character)
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">.</span><span style="color:#96b5b4;">collect</span><span style="color:#c0c5ce;">();
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> common_substring.</span><span style="color:#96b5b4;">len</span><span style="color:#c0c5ce;">() &gt; prefix_len {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">ParentChildPattern::SplitNodeIsParentOfBoth {
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">parent_node: Rc::clone(&amp;node),
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">split_nodes_prefix: common_substring,
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">other_nodes_prefix: child.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix.</span><span style="color:#96b5b4;">clone</span><span style="color:#c0c5ce;">(),
+</span><span style="color:#c0c5ce;">                        </span><span style="color:#c0c5ce;">new_node: new_node,
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#c0c5ce;">};
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">ParentChildPattern::NewNodeIsChild {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node: node,
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">new_node: new_node,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">get_mut_child</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">node</span><span style="color:#c0c5ce;">: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; Option&lt;Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;&gt; {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">(childs_prefix, child_node) in &amp;node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().children {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> prefix.</span><span style="color:#96b5b4;">starts_with</span><span style="color:#c0c5ce;">(childs_prefix) {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">Some(Rc::clone(child_node));
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">None
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">walk_mut</span><span style="color:#c0c5ce;">(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">, </span><span style="color:#bf616a;">prefix</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; WalkResult&lt;T&gt; {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> node = Rc::clone(&amp;</span><span style="color:#bf616a;">self</span><span style="color:#c0c5ce;">.root);
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> node.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix == prefix {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">WalkResult::Found(node);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> new_node = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_mut_child(Rc::clone(&amp;node), prefix);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">let mut</span><span style="color:#c0c5ce;"> parent_node = node;
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">while let </span><span style="color:#c0c5ce;">Some(child) = new_node {
+</span><span style="color:#c0c5ce;">                </span><span style="color:#b48ead;">if</span><span style="color:#c0c5ce;"> child.</span><span style="color:#96b5b4;">borrow</span><span style="color:#c0c5ce;">().prefix == prefix {
+</span><span style="color:#c0c5ce;">                    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">WalkResult::Found(child);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">parent_node = Rc::clone(&amp;child);
+</span><span style="color:#c0c5ce;">                </span><span style="color:#c0c5ce;">new_node = </span><span style="color:#b48ead;">Self</span><span style="color:#c0c5ce;">::get_mut_child(child, prefix);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">WalkResult::FoundParent(parent_node)
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">WalkResult&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">Found(Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;),
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">FoundParent(Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;),
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">enum </span><span style="color:#c0c5ce;">ParentChildPattern&lt;T&gt; {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">ParentOfOtherChild {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">other_childs_prefix: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">SplitNodeIsParentOfBoth {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">split_nodes_prefix: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">other_nodes_prefix: String,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">NewNodeIsChild {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">parent_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">new_node: Rc&lt;RefCell&lt;Node&lt;T&gt;&gt;&gt;,
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">},
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">    </span><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">cfg</span><span style="color:#c0c5ce;">(test)]
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">mod </span><span style="color:#c0c5ce;">tests {
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">use super</span><span style="color:#c0c5ce;">::*;
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">#[</span><span style="color:#bf616a;">test</span><span style="color:#c0c5ce;">]
+</span><span style="color:#c0c5ce;">        </span><span style="color:#b48ead;">fn </span><span style="color:#8fa1b3;">test_insert_and_get</span><span style="color:#c0c5ce;">() {
+</span><span style="color:#c0c5ce;">            </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> tree = PrefixTree::new();
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">mettle</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">meddle</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">med</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">medial</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">10</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">tree.</span><span style="color:#96b5b4;">insert</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">middle</span><span style="color:#c0c5ce;">&quot;.</span><span style="color:#96b5b4;">into</span><span style="color:#c0c5ce;">(), </span><span style="color:#d08770;">12</span><span style="color:#c0c5ce;">);
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">mettle</span><span style="color:#c0c5ce;">&quot;), Some(</span><span style="color:#d08770;">5</span><span style="color:#c0c5ce;">));
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">med</span><span style="color:#c0c5ce;">&quot;), Some(</span><span style="color:#d08770;">7</span><span style="color:#c0c5ce;">));
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">meddle</span><span style="color:#c0c5ce;">&quot;), Some(</span><span style="color:#d08770;">1</span><span style="color:#c0c5ce;">));
+</span><span style="color:#c0c5ce;">            </span><span style="color:#c0c5ce;">assert_eq!(tree.</span><span style="color:#96b5b4;">get</span><span style="color:#c0c5ce;">(&quot;</span><span style="color:#a3be8c;">mech</span><span style="color:#c0c5ce;">&quot;), None);
+</span><span style="color:#c0c5ce;">        </span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">}
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#c0c5ce;">
+</span></pre>
+    </div>
+  </div>
+</body>
+
+</html>
